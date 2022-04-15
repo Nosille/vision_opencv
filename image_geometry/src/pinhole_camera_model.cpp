@@ -1,6 +1,7 @@
 #include "image_geometry/pinhole_camera_model.h"
 #include <sensor_msgs/distortion_models.h>
 #include <opencv2/calib3d/calib3d.hpp>
+#include <opencv2/ccalib/omnidir.hpp>
 #ifdef BOOST_SHARED_PTR_HPP_INCLUDED
 #include <boost/make_shared.hpp>
 #endif
@@ -8,7 +9,7 @@
 namespace image_geometry {
 
 enum DistortionState { NONE, CALIBRATED, UNKNOWN };
-enum DistortionModel { EQUIDISTANT, PLUMB_BOB_OR_RATIONAL_POLYNOMIAL, UNKNOWN_MODEL };
+enum DistortionModel { EQUIDISTANT, PLUMB_BOB_OR_RATIONAL_POLYNOMIAL, OMNIDIRECTIONAL, UNKNOWN_MODEL };
 
 struct PinholeCameraModel::Cache
 {
@@ -152,7 +153,8 @@ bool PinholeCameraModel::fromCameraInfo(const sensor_msgs::CameraInfo& msg)
   // Figure out how to handle the distortion
   if (cam_info_.distortion_model == sensor_msgs::distortion_models::PLUMB_BOB ||
       cam_info_.distortion_model == sensor_msgs::distortion_models::RATIONAL_POLYNOMIAL ||
-      cam_info_.distortion_model == sensor_msgs::distortion_models::EQUIDISTANT) {
+      cam_info_.distortion_model == sensor_msgs::distortion_models::EQUIDISTANT ||
+      cam_info_.distortion_model == sensor_msgs::distortion_models::OMNIDIRECTIONAL) {
     // If any distortion coefficient is non-zero, then need to apply the distortion
     cache_->distortion_state = NONE;
     for (size_t i = 0; i < cam_info_.D.size(); ++i)
@@ -174,6 +176,9 @@ bool PinholeCameraModel::fromCameraInfo(const sensor_msgs::CameraInfo& msg)
   }
   else if(cam_info_.distortion_model == sensor_msgs::distortion_models::EQUIDISTANT) {
     cache_->distortion_model = EQUIDISTANT;
+  }
+  else if(cam_info_.distortion_model == sensor_msgs::distortion_models::OMNIDIRECTIONAL) {
+    cache_->distortion_model = OMNIDIRECTIONAL;
   }
   else
     cache_->distortion_model = UNKNOWN_MODEL;
@@ -408,6 +413,9 @@ cv::Point2d PinholeCameraModel::rectifyPoint(const cv::Point2d& uv_raw, const cv
     case EQUIDISTANT:
       cv::fisheye::undistortPoints(src_pt, dst_pt, K, D_, R_, P);
       break;
+    case OMNIDIRECTIONAL:
+      cv::omnidir::undistortPoints(src_pt, dst_pt, K, cv::Mat(D_, cv::Rect(0,0,4,1)), D_.at<double>(4), R_);
+      break;      
     default:
       assert(cache_->distortion_model == UNKNOWN_MODEL);
       throw Exception("Wrong distortion model. Supported models: PLUMB_BOB, RATIONAL_POLYNOMIAL and EQUIDISTANT.");
@@ -445,6 +453,9 @@ cv::Point2d PinholeCameraModel::unrectifyPoint(const cv::Point2d& uv_rect, const
     case EQUIDISTANT:
       cv::fisheye::projectPoints(std::vector<cv::Point3d>(1, ray), image_point, r_vec, t_vec, K, D_);
       break;
+    case OMNIDIRECTIONAL:
+      cv::omnidir::projectPoints(std::vector<cv::Point3d>(1, ray), image_point, r_vec, t_vec, K, D_.at<double>(4), cv::Mat(D_, cv::Rect(0,0,4,1)));
+      break;      
     default:
       assert(cache_->distortion_model == UNKNOWN_MODEL);
       throw Exception("Wrong distortion model. Supported models: PLUMB_BOB, RATIONAL_POLYNOMIAL and EQUIDISTANT.");
@@ -541,12 +552,16 @@ void PinholeCameraModel::initRectificationMaps() const
                                     CV_16SC2, cache_->full_map1, cache_->full_map2);
         break;
       case EQUIDISTANT:
-        cv::fisheye::initUndistortRectifyMap(K_binned,D_, R_, P_binned, binned_resolution,
+        cv::fisheye::initUndistortRectifyMap(K_binned, D_, R_, P_binned, binned_resolution,
                                              CV_16SC2, cache_->full_map1, cache_->full_map2);
         break;
+      case OMNIDIRECTIONAL:
+        cv::omnidir::initUndistortRectifyMap(K_binned, cv::Mat(D_, cv::Rect(0,0,4,1)), D_.at<double>(4), R_, P_binned, binned_resolution,
+                                             CV_16SC2, cache_->full_map1, cache_->full_map2, cv::omnidir::RECTIFY_PERSPECTIVE);
+        break;        
       default:
         assert(cache_->distortion_model == UNKNOWN_MODEL);
-        throw Exception("Wrong distortion model. Supported models: PLUMB_BOB, RATIONAL_POLYNOMIAL and EQUIDISTANT.");
+        throw Exception("Wrong distortion model. Supported models: PLUMB_BOB, RATIONAL_POLYNOMIAL, EQUIDISTANT, and OMNIDIRECTIONAL.");
     }
     cache_->full_maps_dirty = false;
   }
